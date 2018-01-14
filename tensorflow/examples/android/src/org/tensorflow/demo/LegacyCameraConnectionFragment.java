@@ -20,7 +20,9 @@ import android.app.Fragment;
 import android.graphics.SurfaceTexture;
 import android.hardware.Camera;
 import android.hardware.Camera.CameraInfo;
+import android.media.MediaRecorder;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Size;
@@ -30,184 +32,270 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
+
+import java.io.File;
 import java.io.IOException;
 import java.util.List;
+
 import org.tensorflow.demo.env.ImageUtils;
 import org.tensorflow.demo.env.Logger;
 import org.tensorflow.demo.R; // Explicit import needed for internal Google builds.
 
 public class LegacyCameraConnectionFragment extends Fragment {
-  private Camera camera;
-  private static final Logger LOGGER = new Logger();
-  private Camera.PreviewCallback imageListener;
-  private Size desiredSize;
+    private Camera camera;
+    private static final Logger LOGGER = new Logger();
+    private Camera.PreviewCallback imageListener;
+    private Size desiredSize;
 
-  /**
-   * The layout identifier to inflate for this Fragment.
-   */
-  private int layout;
+    private MediaRecorder mMediaRecorder;
 
-  public LegacyCameraConnectionFragment(
-      final Camera.PreviewCallback imageListener, final int layout, final Size desiredSize) {
-    this.imageListener = imageListener;
-    this.layout = layout;
-    this.desiredSize = desiredSize;
-  }
+    /**
+     * The layout identifier to inflate for this Fragment.
+     */
+    private int layout;
 
-  /**
-   * Conversion from screen rotation to JPEG orientation.
-   */
-  private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
+    public LegacyCameraConnectionFragment(
+            final Camera.PreviewCallback imageListener, final int layout, final Size desiredSize) {
+        this.imageListener = imageListener;
+        this.layout = layout;
+        this.desiredSize = desiredSize;
+    }
 
-  static {
-    ORIENTATIONS.append(Surface.ROTATION_0, 90);
-    ORIENTATIONS.append(Surface.ROTATION_90, 0);
-    ORIENTATIONS.append(Surface.ROTATION_180, 270);
-    ORIENTATIONS.append(Surface.ROTATION_270, 180);
-  }
+    /**
+     * Conversion from screen rotation to JPEG orientation.
+     */
+    private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
 
-  /**
-   * {@link android.view.TextureView.SurfaceTextureListener} handles several lifecycle events on a
-   * {@link TextureView}.
-   */
-  private final TextureView.SurfaceTextureListener surfaceTextureListener =
-      new TextureView.SurfaceTextureListener() {
-        @Override
-        public void onSurfaceTextureAvailable(
-            final SurfaceTexture texture, final int width, final int height) {
+    static {
+        ORIENTATIONS.append(Surface.ROTATION_0, 90);
+        ORIENTATIONS.append(Surface.ROTATION_90, 0);
+        ORIENTATIONS.append(Surface.ROTATION_180, 270);
+        ORIENTATIONS.append(Surface.ROTATION_270, 180);
+    }
 
-          int index = getCameraId();
-          camera = Camera.open(index);
+    /**
+     * {@link android.view.TextureView.SurfaceTextureListener} handles several lifecycle events on a
+     * {@link TextureView}.
+     */
+    private final TextureView.SurfaceTextureListener surfaceTextureListener =
+            new TextureView.SurfaceTextureListener() {
+                @Override
+                public void onSurfaceTextureAvailable(
+                        final SurfaceTexture texture, final int width, final int height) {
 
-          try {
-            Camera.Parameters parameters = camera.getParameters();
-            parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+                    int index = getCameraId();
+                    camera = Camera.open(index);
 
-            List<Camera.Size> cameraSizes = parameters.getSupportedPreviewSizes();
-            Size[] sizes = new Size[cameraSizes.size()];
-            int i = 0;
-            for (Camera.Size size : cameraSizes) {
-              sizes[i++] = new Size(size.width, size.height);
-            }
-            Size previewSize =
-                CameraConnectionFragment.chooseOptimalSize(
-                    sizes, desiredSize.getWidth(), desiredSize.getHeight());
-            parameters.setPreviewSize(previewSize.getWidth(), previewSize.getHeight());
-            camera.setDisplayOrientation(90);
-            camera.setParameters(parameters);
-            camera.setPreviewTexture(texture);
-          } catch (IOException exception) {
+                    try {
+                        Camera.Parameters parameters = camera.getParameters();
+                        parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+
+                        List<Camera.Size> cameraSizes = parameters.getSupportedPreviewSizes();
+                        Size[] sizes = new Size[cameraSizes.size()];
+                        int i = 0;
+                        for (Camera.Size size : cameraSizes) {
+                            sizes[i++] = new Size(size.width, size.height);
+                        }
+                        Size previewSize =
+                                CameraConnectionFragment.chooseOptimalSize(
+                                        sizes, desiredSize.getWidth(), desiredSize.getHeight());
+                        parameters.setPreviewSize(previewSize.getWidth(), previewSize.getHeight());
+                        camera.setDisplayOrientation(90);
+                        camera.setParameters(parameters);
+                        camera.setPreviewTexture(texture);
+                    } catch (IOException exception) {
+                        camera.release();
+                    }
+
+                    camera.setPreviewCallbackWithBuffer(imageListener);
+                    Camera.Size s = camera.getParameters().getPreviewSize();
+                    camera.addCallbackBuffer(new byte[ImageUtils.getYUVByteSize(s.height, s.width)]);
+
+                    textureView.setAspectRatio(s.height, s.width);
+                    camera.startPreview();
+                }
+
+                @Override
+                public void onSurfaceTextureSizeChanged(
+                        final SurfaceTexture texture, final int width, final int height) {
+
+                    camera.setPreviewCallback(imageListener);
+                }
+
+                @Override
+                public boolean onSurfaceTextureDestroyed(final SurfaceTexture texture) {
+                    return true;
+                }
+
+                @Override
+                public void onSurfaceTextureUpdated(final SurfaceTexture texture) {
+                }
+            };
+
+    /**
+     * An {@link AutoFitTextureView} for camera preview.
+     */
+    private AutoFitTextureView textureView;
+
+    /**
+     * An additional thread for running tasks that shouldn't block the UI.
+     */
+    private HandlerThread backgroundThread;
+
+    @Override
+    public View onCreateView(
+            final LayoutInflater inflater, final ViewGroup container, final Bundle savedInstanceState) {
+        return inflater.inflate(layout, container, false);
+    }
+
+    @Override
+    public void onViewCreated(final View view, final Bundle savedInstanceState) {
+        textureView = (AutoFitTextureView) view.findViewById(R.id.texture);
+    }
+
+    @Override
+    public void onActivityCreated(final Bundle savedInstanceState) {
+        super.onActivityCreated(savedInstanceState);
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        startBackgroundThread();
+        // When the screen is turned off and turned back on, the SurfaceTexture is already
+        // available, and "onSurfaceTextureAvailable" will not be called. In that case, we can open
+        // a camera and start preview from here (otherwise, we wait until the surface is ready in
+        // the SurfaceTextureListener).
+
+        if (textureView.isAvailable()) {
+            camera.startPreview();
+        } else {
+            textureView.setSurfaceTextureListener(surfaceTextureListener);
+        }
+    }
+
+    @Override
+    public void onPause() {
+        stopCamera();
+        stopBackgroundThread();
+        super.onPause();
+    }
+
+    public void startRecordVideo() {
+        initMediaRecorder();
+        mMediaRecorder.start();
+    }
+
+    public void resumeRecordVideo() {
+    }
+
+    public void pauseRecordVideo() {
+
+    }
+
+    private void sleep() {
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void stopRecordVideo() {
+        mMediaRecorder.stop();
+        mMediaRecorder.reset();
+        mMediaRecorder.release();
+
+        try {
+            camera.lock();
+            camera.reconnect();
+            camera.stopPreview();
+            camera.setPreviewCallback(imageListener);
+            camera.startPreview();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void initMediaRecorder() {
+//        Camera.Size previewSize = camera.getParameters().getPreviewSize();
+        Surface previewSurface = new Surface(textureView.getSurfaceTexture());
+
+        camera.unlock();
+        mMediaRecorder = new MediaRecorder();
+        mMediaRecorder.setCamera(camera);
+        mMediaRecorder.setVideoSource(MediaRecorder.VideoSource.CAMERA);
+        mMediaRecorder.setOrientationHint(90);
+        mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
+        mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H263);
+//        mMediaRecorder.setVideoSize(previewSize.width, previewSize.height);
+        mMediaRecorder.setOutputFile(getExternalStorageDir());
+        mMediaRecorder.setPreviewDisplay(previewSurface);
+
+        try {
+            mMediaRecorder.prepare();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private String getExternalStorageDir() {
+        File result = null;
+
+        if (!Environment.getExternalStorageState().equals(
+                Environment.MEDIA_MOUNTED)) {
+
+            return null;
+        }
+
+        String rootDir = Environment.getExternalStorageDirectory().toString();
+        String targetDir = rootDir + "/edgeComputing";
+        result = new File(targetDir);
+        if (!result.exists() && !result.mkdir()) {
+            return null;
+        }
+
+        return result.toString() + "/output.3gp";
+    }
+
+    /**
+     * Starts a background thread and its {@link Handler}.
+     */
+    private void startBackgroundThread() {
+        backgroundThread = new HandlerThread("CameraBackground");
+        backgroundThread.start();
+    }
+
+    /**
+     * Stops the background thread and its {@link Handler}.
+     */
+    private void stopBackgroundThread() {
+        backgroundThread.quitSafely();
+        try {
+            backgroundThread.join();
+            backgroundThread = null;
+        } catch (final InterruptedException e) {
+            LOGGER.e(e, "Exception!");
+        }
+    }
+
+    protected void stopCamera() {
+        if (camera != null) {
+            camera.stopPreview();
+            camera.setPreviewCallback(null);
             camera.release();
-          }
-
-          camera.setPreviewCallbackWithBuffer(imageListener);
-          Camera.Size s = camera.getParameters().getPreviewSize();
-          camera.addCallbackBuffer(new byte[ImageUtils.getYUVByteSize(s.height, s.width)]);
-
-          textureView.setAspectRatio(s.height, s.width);
-
-          camera.startPreview();
+            camera = null;
         }
+    }
 
-        @Override
-        public void onSurfaceTextureSizeChanged(
-            final SurfaceTexture texture, final int width, final int height) {}
-
-        @Override
-        public boolean onSurfaceTextureDestroyed(final SurfaceTexture texture) {
-          return true;
+    private int getCameraId() {
+        CameraInfo ci = new CameraInfo();
+        for (int i = 0; i < Camera.getNumberOfCameras(); i++) {
+            Camera.getCameraInfo(i, ci);
+            if (ci.facing == CameraInfo.CAMERA_FACING_BACK)
+                return i;
         }
-
-        @Override
-        public void onSurfaceTextureUpdated(final SurfaceTexture texture) {}
-      };
-
-  /**
-   * An {@link AutoFitTextureView} for camera preview.
-   */
-  private AutoFitTextureView textureView;
-
-  /**
-   * An additional thread for running tasks that shouldn't block the UI.
-   */
-  private HandlerThread backgroundThread;
-
-  @Override
-  public View onCreateView(
-      final LayoutInflater inflater, final ViewGroup container, final Bundle savedInstanceState) {
-    return inflater.inflate(layout, container, false);
-  }
-
-  @Override
-  public void onViewCreated(final View view, final Bundle savedInstanceState) {
-    textureView = (AutoFitTextureView) view.findViewById(R.id.texture);
-  }
-
-  @Override
-  public void onActivityCreated(final Bundle savedInstanceState) {
-    super.onActivityCreated(savedInstanceState);
-  }
-
-  @Override
-  public void onResume() {
-    super.onResume();
-    startBackgroundThread();
-    // When the screen is turned off and turned back on, the SurfaceTexture is already
-    // available, and "onSurfaceTextureAvailable" will not be called. In that case, we can open
-    // a camera and start preview from here (otherwise, we wait until the surface is ready in
-    // the SurfaceTextureListener).
-
-    if (textureView.isAvailable()) {
-      camera.startPreview();
-    } else {
-      textureView.setSurfaceTextureListener(surfaceTextureListener);
+        return -1; // No camera found
     }
-  }
-
-  @Override
-  public void onPause() {
-    stopCamera();
-    stopBackgroundThread();
-    super.onPause();
-  }
-
-  /**
-   * Starts a background thread and its {@link Handler}.
-   */
-  private void startBackgroundThread() {
-    backgroundThread = new HandlerThread("CameraBackground");
-    backgroundThread.start();
-  }
-
-  /**
-   * Stops the background thread and its {@link Handler}.
-   */
-  private void stopBackgroundThread() {
-    backgroundThread.quitSafely();
-    try {
-      backgroundThread.join();
-      backgroundThread = null;
-    } catch (final InterruptedException e) {
-      LOGGER.e(e, "Exception!");
-    }
-  }
-
-  protected void stopCamera() {
-    if (camera != null) {
-      camera.stopPreview();
-      camera.setPreviewCallback(null);
-      camera.release();
-      camera = null;
-    }
-  }
-
-  private int getCameraId() {
-    CameraInfo ci = new CameraInfo();
-    for (int i = 0; i < Camera.getNumberOfCameras(); i++) {
-      Camera.getCameraInfo(i, ci);
-      if (ci.facing == CameraInfo.CAMERA_FACING_BACK)
-        return i;
-    }
-    return -1; // No camera found
-  }
 }
