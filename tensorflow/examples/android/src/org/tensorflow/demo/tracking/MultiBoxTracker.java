@@ -304,7 +304,7 @@ public class MultiBoxTracker {
   private void handleDetection(
       final byte[] frameCopy, final long timestamp, final Pair<Float, Recognition> potential) {
     final ObjectTracker.TrackedObject potentialObject =
-        objectTracker.trackObject(potential.second.getLocation(), timestamp, frameCopy);
+        objectTracker.trackObject(potential.second.getLocation(), timestamp, frameCopy, potential.second.getTitle());
 
     final float potentialCorrelation = potentialObject.getCurrentCorrelation();
     logger.v(
@@ -417,5 +417,9 @@ public class MultiBoxTracker {
     trackedRecognition.color =
         recogToReplace != null ? recogToReplace.color : availableColors.poll();
     trackedObjects.add(trackedRecognition);
+  }
+
+  public int getCurrentPeopleNum() {
+      return objectTracker.getCurrentPeopleNum();
   }
 }

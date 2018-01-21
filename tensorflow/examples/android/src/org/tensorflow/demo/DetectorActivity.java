@@ -316,7 +316,6 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
                         final List<Classifier.Recognition> mappedRecognitions =
                                 new LinkedList<Classifier.Recognition>();
 
-                        int currentPeopleNum = 0;
                         for (final Classifier.Recognition result : results) {
                             final RectF location = result.getLocation();
                             if (location != null && result.getConfidence() >= minimumConfidence) {
@@ -325,16 +324,11 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
                                 cropToFrameTransform.mapRect(location);
                                 result.setLocation(location);
                                 mappedRecognitions.add(result);
-
-                                if ("person".equals(result.getTitle())) {
-                                    currentPeopleNum++;
-                                }
                             }
                         }
 
-                        recordVideoIfNecessary(currentPeopleNum);
-
                         tracker.trackResults(mappedRecognitions, luminanceCopy, currTimestamp);
+                        recordVideoIfNecessary(tracker.getCurrentPeopleNum());
                         trackingOverlay.postInvalidate();
 
                         requestRender();
